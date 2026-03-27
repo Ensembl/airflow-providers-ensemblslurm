@@ -1,0 +1,38 @@
+operator: ensemblslurm.operators.EnsemblBashOperator
+doc_md: |
+  ## Description
+  This task checks that all genomes specified by their UUIDs have been assigned to an organism group in the metadata database for a given release ID. It compares the expected count of genome UUIDs with the actual count of genomes assigned to the organism group and raises an error if they do not match.
+
+  ## Parameters
+  - `genome_uuid`: A list of genome UUIDs to be checked.
+  - `release_id`: The release ID for which the check is performed.
+time_limit: 1D
+memory_per_node: 1GB
+dependencies:
+  - assign_organism_to_organism_group
+bash_command: |
+ EXPECTED_GENOME_UUID_COUNT={{ dag_run.conf['genome_uuid'] | length }}
+ GENOME_UUID="and genome_uuid in ( '{{ dag_run.conf["genome_uuid"] | join("','") }}' )" 
+ RELEASE_ID="and genome_release.release_id={{ dag_run.conf['release_id'] }}"
+ genome_count=`prod1-w -A ensembl_genome_metadata -Ne "
+ select count(*) as genome_organism_group_count
+ from genome
+          join assembly on genome.assembly_id = assembly.assembly_id
+          join genome_release on genome.genome_id = genome_release.genome_id
+          join genome_dataset on genome.genome_id = genome_dataset.genome_id
+          join organism on genome.organism_id = organism.organism_id
+          join organism_group_member on organism.organism_id = organism_group_member.organism_id
+          join organism_group on organism_group_member.organism_group_id = organism_group.organism_group_id
+          join dataset on genome_dataset.dataset_id = dataset.dataset_id
+          join ensembl_release on genome_release.release_id = ensembl_release.release_id
+ where dataset.name = 'genebuild' and organism_group.type='Division' $GENOME_UUID $RELEASE_ID
+ "`
+ 
+ echo "Number of genomes assigned to organism group: "
+ echo $genome_count
+ 
+ if [ "$EXPECTED_GENOME_UUID_COUNT" != "$genome_count" ]; then
+     echo "Error: The number of genomes $genome_count assigned to organism group does not match the expected genome UUID count $EXPECTED_GENOME_UUID_COUNT ."
+     exit 1
+ fi
+ 

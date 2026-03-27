@@ -1,0 +1,11 @@
+operator: ensemblslurm.operators.HiveNextflowOperator
+prepare_pipeline_param_by: species
+bash_command: |-
+  module load production/mvp114
+  module load rel_env
+  
+  init_pipeline.pl Bio::EnsEMBL::Production::Pipeline::PipeConfig::CoreStatisticsMVP_conf \
+  $(h1-w details hive) \
+  -pipeline_name mvp_core_stats_release_5 \
+  -registry $REG_PROD_DIR/st6-w.pm \
+  -history_file $PROD_DIR/datachecks/history/st6.json

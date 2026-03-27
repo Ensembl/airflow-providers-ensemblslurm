@@ -1,0 +1,43 @@
+# --- Docker Operator Example ---
+#operator: airflow.providers.docker.operators.docker.DockerOperator
+#dependencies:
+#  - check_dag_config
+#task_id: assign_organism_to_organism_group
+#image: automationmeta:latest
+#command: |
+# python  -u /home/ens2020/.local/lib/python3.10/site-packages/ensembl/production/metadata/scripts/organism_to_organismgroup.py
+#  {% if dag_run.conf.get('genome_uuid') and dag_run.conf['genome_uuid'] | length > 0 %}
+#  --genome_uuid {{ dag_run.conf['genome_uuid'] | join(' ') }}
+#  {% endif %}
+#  {% if dag_run.conf.get('release_id') %}
+#  --release_id {{ dag_run.conf['release_id'] }}
+#  {% endif %}
+#  --metadata_db_uri mysql://ensadmin:ensembl@mysql-ens-test-1:4508/ensembl_genome_metadata
+#  --core_server_uri mysql://ensro@mysql-ens-sta-6.ebi.ac.uk:4695/
+#docker_url: unix://var/run/docker.sock
+#network_mode: host
+#auto_remove: never
+#tty: true
+#mount_tmp_dir: false
+# environment:
+#   DEBUG: "0"
+# ---
+operator: ensemblslurm.operators.EnsemblBashOperator
+doc_md: |
+  ## Description
+  This task assigns organism groups to genomes based on their UUIDs for a specified release ID. It utilizes a Python script to perform the assignment by connecting to the metadata database and core server.
+
+  ## Parameters
+  - `genome_uuid`: A list of genome UUIDs to be assigned to organism groups.
+  - `release_id`: The release ID for which the assignment is performed.
+time_limit: 1D
+memory_per_node: 1GB
+dependencies:
+  - check_dag_config
+bash_command: |
+  module load production/mvp114 rel_env
+  python $BASE_DIR/ensembl-metadata-api/src/ensembl/production/metadata/scripts/organism_to_organismgroup.py \
+  {% if dag_run.conf.get('genome_uuid') and dag_run.conf['genome_uuid'] | length > 0 %}  --genome_uuid {{ dag_run.conf['genome_uuid'] | join(' ') }}   {% endif %} \
+  {% if dag_run.conf.get('release_id') %}  --release_id {{ dag_run.conf['release_id'] }}   {% endif %} \
+  --metadata_db_uri $(prod1-w details url)ensembl_genome_metadata \
+  --core_server_uri $(st6 details url) 

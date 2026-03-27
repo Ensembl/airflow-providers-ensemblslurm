@@ -1,0 +1,23 @@
+operator: ensemblslurm.operators.NextflowOperator
+dependencies:
+  - blast_dumps
+bash_command: |-
+  module load production/refget rel_env
+  export RELEASE_VERSION={{ dag_run.conf['release_name'] if dag_run.conf and 'release_name' in dag_run.conf }}
+  export NOBACKUP_DIR=/hps/nobackup/flicek/ensembl/production/ensembl_dumps/web/ensembl-refget/release_${RELEASE_VERSION}/
+  export NF_DIR=$BASE_DIR/ensembl-refget/pipeline/nextflow
+  export NF_CONFIG_DIR=$NF_DIR/config
+  export SCRIPT_DIR=$BASE_DIR/ensembl-refget/pipeline/bin
+  export FASTA_PATH=/hps/nobackup/flicek/ensembl/production/ensembl_dumps/blast/release_${RELEASE_VERSION}/
+  mkdir -p $NOBACKUP_DIR
+  
+  export DATASET_STATUS=Submitted
+  
+  nextflow $BASE_DIR/ensembl-refget/pipeline/nextflow/refget.nf -c $BASE_DIR/ensembl-refget/pipeline/nextflow/config/refget.config -profile slurm \
+  --factory_path $BASE_DIR/ensembl-metadata-api/src/ensembl/production/metadata/api/factories/genomes.py \
+  --output_path /hps/nobackup/flicek/ensembl/production/ensembl_dumps/web/ensembl-refget/release_${RELEASE_VERSION}/{{ run_id }} \
+  --script_path $BASE_DIR/ensembl-refget/pipeline/bin \
+  --dbconnection_file /hps/software/users/ensembl/production/ens2020/modenv/production/refget/config.json \
+  --metadatadb_key meta --speciesdb_key species \
+  --fasta_path $FASTA_PATH \
+  --factory_selector $DATASET_STATUS

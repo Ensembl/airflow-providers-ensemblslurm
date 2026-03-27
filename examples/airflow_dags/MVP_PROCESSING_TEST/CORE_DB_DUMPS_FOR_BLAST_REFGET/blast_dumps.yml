@@ -1,0 +1,20 @@
+operator: ensemblslurm.operators.HiveNextflowOperator
+bash_command: |-
+  module load hive/2.8
+  module load production/mvp114
+  module load rel_env
+
+  export METADATA_DB_URI=`prod1-w details url`
+  
+  init_pipeline.pl Bio::EnsEMBL::Production::Pipeline::PipeConfig::EnsemblBlastDumps_conf \
+  $(h1-w details hive) \
+  -pipeline_name mvp_blast_dump \
+  -registry ${REG_PROD_DIR}/st6.pm \
+  -metadata_db_uri  ${METADATA_DB_URI}ensembl_genome_metadata \
+  -dump_dir /hps/nobackup/flicek/ensembl/production/ensembl_dumps/blast/release_{{ dag_run.conf['release_name'] }} \
+  -hardmasked 0 \
+  -cds 1 \
+  -timestamped 0 \
+  -batch_size 0 \
+  -dataset_status Submitted \
+  -dataset_type blast
