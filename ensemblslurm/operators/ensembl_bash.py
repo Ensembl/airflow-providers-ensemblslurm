@@ -338,7 +338,7 @@ class SlurmJobService:
         self.check_interval = check_interval
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def submit_job(self, command: str, job_name: str) -> str:
+    def submit_job(self, command: str, job_name: str) -> int:
         """
         Submit a job to SLURM.
 
@@ -864,18 +864,6 @@ class EnsemblBashOperator(BashOperator):
             # Parse job name
             self.job_name = self.parser.parse_job_name(context, self.job_name)
 
-            # Check Slurm Jobs Already Running with the same name to avoid resubmission and monitor the existing one instead
-            existing_job = self.job_service.get_job_status_and_id_by_name(self.job_name)
-            if existing_job is not None and existing_job[1] not in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
-                self.job_info = JobInfo(
-                    job_id=existing_job[0],
-                    job_name=self.job_name,
-                    bash_command=self.bash_command,
-                    status=existing_job[1]
-                )
-                logging.warning(f"Found existing SLURM jobs with name '{self.job_name}': {existing_job}")
-                logging.warning(f"Monitoring Existing Job ID {existing_job[0]} with status {existing_job[1]} instead of submitting a new job")
-                return
 
             # Build command - skip Nextflow wrapping if use_nextflow is False
             if self.use_nextflow:
@@ -922,13 +910,39 @@ class EnsemblBashOperator(BashOperator):
                 return
 
             # Submit a job if not already running
-            if not self.job_info:
+            # Check Slurm Jobs Already Running with the same name to avoid resubmission and monitor the existing one instead
+            logging.info(f"Checking for existing SLURM jobs with name '{self.job_name}'")
+            existing_job = self.job_service.get_job_status_and_id_by_name(self.job_name)
+            if existing_job is not None and existing_job[1] not in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
+                self.job_info = JobInfo(
+                    job_id=existing_job[0],
+                    job_name=self.job_name,
+                    bash_command=self.ensembl_cmd,
+                    status=existing_job[1]
+                )
+                logging.warning(f"Found existing SLURM jobs with name '{self.job_name}': {existing_job}")
+                logging.warning(f"Monitoring Existing Job ID {existing_job[0]} with status {existing_job[1]} instead of submitting a new job")
+                logging.info(f"No existing SLURM job found with name '{self.job_name}', preparing to submit new job")
+
+            else:
+                logging.info(f"Submitting a new SLURM job for '{self.job_name}'")
                 job_id = self.job_service.submit_job(self.ensembl_cmd, self.job_name)
                 self.job_info = JobInfo(
                     job_id=job_id,
                     job_name=self.job_name,
                     bash_command=self.ensembl_cmd
                 )
+
+            # Push Jobs status to XCom for downstream tasks
+            task_instance.xcom_push(
+                key="job_info",
+                value={
+                    "job_id": self.job_info.job_id,
+                    "task_id": task_instance.task_id,
+                    "job_name": self.job_name,
+                    "user": self.slurm_config.user,
+                }
+            )
 
             # Monitor job
             if self.run_defer:
