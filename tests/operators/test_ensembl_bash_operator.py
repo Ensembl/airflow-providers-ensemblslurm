@@ -111,6 +111,7 @@ def mock_slurm_client():
     client.get_status = Mock(return_value="COMPLETED")
     client.wait_finished = Mock(return_value="COMPLETED")
     client.wait_for_job = Mock(return_value="COMPLETED")
+    client.get_all_job_properties = Mock(return_value=[])
     client.get_job_properties_from_slurmdb = Mock()
     client.get_job_status_from_slurmdb = Mock()
     return client
@@ -1044,7 +1045,8 @@ class TestEnsemblBashOperator:
         mock_client = Mock()
         mock_client._parameters = {"name": "test"}
         mock_client.submit_script.return_value = "12345"
-        mock_client.wait_for_job.return_value = "COMPLETED"
+        mock_client.get_all_job_properties.return_value = []
+        mock_client.get_status.return_value = "COMPLETED"
 
         mock_factory_instance = Mock()
         mock_factory_instance.create_client.return_value = mock_client

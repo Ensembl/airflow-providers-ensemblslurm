@@ -1,8 +1,9 @@
 from pyslurmutils.client.rest.base import SlurmBaseRestClient
+
 # --- Configuration ---
-SLURM_URL = ""
-USER = ""
-TOKEN = ""
+SLURM_URL = "https://codon-slurm-restd.ebi.ac.uk"
+USER = "ens2020"
+TOKEN = "your_api_token_here"  # Replace with your actual API token
 
 client = SlurmBaseRestClient(url=SLURM_URL, user_name=USER, token=TOKEN)
 
@@ -21,5 +22,5 @@ else:
     for job in matching_jobs:
         jid = job.job_id
         # Cancel the job
-        client.cancel_job(jid)
+        # client.cancel_job(jid)
         print(f"Cancelled job {jid} ({job.name})")

@@ -700,7 +700,7 @@ class AirflowExceptionWithSlackNotification(AirflowException):
             dag_run = context.get("dag_run")
             dag_run_conf = dag_run.conf
             slack_notification_enable = dag_run_conf.get(
-                "slack_notification_enable", Variable.get("slack_notification_enable", default=True)
+                "slack_notification_enable", Variable.get("slack_notification_enable", default=False)
             )
             if slack_notification_enable:
                 logging.info(f"{ti}")
