@@ -112,13 +112,7 @@ class NextflowOperator(EnsemblBashOperator):
         try:
             logger.info("Preparing Nextflow execution")
 
-            dag_run_conf = context["dag_run"].conf or {}
-
-            # Respect base config behavior
-            self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
-
-            # Use shared parser (SRP ✅)
-            self.job_name = self.parser.parse_job_name(context, self.job_name)
+            self._prepare_slurm_job(context)
 
             # Prepare working directory
             work_dir = os.path.join(self.cwd, self.job_name)

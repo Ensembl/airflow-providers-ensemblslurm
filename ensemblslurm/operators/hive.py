@@ -171,12 +171,7 @@ class HiveNextflowOperator(EnsemblBashOperator):
         try:
             logger.info("Preparing Hive Nextflow execution")
 
-            dag_run_conf = context["dag_run"].conf or {}
-
-            self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
-
-            # Use shared parser
-            self.job_name = self.parser.parse_job_name(context, self.job_name)
+            self._prepare_slurm_job(context)
 
             work_dir = os.path.join(self.cwd, self.job_name)
 

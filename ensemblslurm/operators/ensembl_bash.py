@@ -23,6 +23,7 @@ from ensemblslurm.hooks.ensembl_slack import EnsemblSlackNotifier
 
 class JobStatus(str, Enum):
     """SLURM job status enumeration."""
+
     FAILED = "FAILED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
@@ -33,6 +34,7 @@ class JobStatus(str, Enum):
 @dataclass
 class SlurmConfig:
     """Configuration for SLURM connection and job parameters."""
+
     url: str = "https://codon-slurm-restd.ebi.ac.uk"
     api_version: str = "0.0.42"
     user: str = "ens2020"
@@ -48,6 +50,7 @@ class SlurmConfig:
 @dataclass
 class NotificationConfig:
     """Configuration for notification services."""
+
     slack_conn_id: str = "airflow-slack-notification"
     web_log_uri: str = "https://services.airflow.ensembl-production.ebi.ac.uk/nextflow_weblog/receive"
     nf_script_path: Optional[str] = None
@@ -58,6 +61,7 @@ class NotificationConfig:
 @dataclass
 class JobInfo:
     """Information about a submitted job."""
+
     job_id: int
     job_name: str
     bash_command: str
@@ -98,7 +102,6 @@ class ICommandBuilder(Protocol):
     def build_command(self, base_command: str, job_name: str, context: Context) -> str:
         """Build the final command to execute."""
         ...
-
 
 
 class ConfigurationParser:
@@ -148,7 +151,11 @@ class ConfigurationParser:
         time_str = time_str.upper().strip()
 
         # Validate format
-        if len(time_str) < 2 or not time_str[:-1].replace('.', '', 1).isdigit() or time_str[-1] not in ['D', 'H', 'M']:
+        if (
+            len(time_str) < 2
+            or not time_str[:-1].replace(".", "", 1).isdigit()
+            or time_str[-1] not in ["D", "H", "M"]
+        ):
             time_str = "1D"
 
         number = float(time_str[:-1])
@@ -182,14 +189,14 @@ class ConfigurationParser:
         if custom_name:
             return custom_name
 
-        task_instance = context['ti']
-        dag_run = context['dag_run']
+        task_instance = context["ti"]
+        dag_run = context["dag_run"]
 
         # Build job name from components
-        task_id = task_instance.task_id.rsplit(".", 1)[-1] # remove task group name from task id
+        task_id = task_instance.task_id.rsplit(".", 1)[-1]  # remove task group name from task id
 
         # Remove time-related special characters from run_id (ISO 8601 format)
-        run_id = re.sub(r'[-:.+]', '', dag_run.run_id)
+        run_id = re.sub(r"[-:.+]", "", dag_run.run_id)
 
         job_name = f"{dag_run.dag_id}_{task_id}_{run_id}".lower()
 
@@ -453,13 +460,12 @@ class SlurmJobService:
             jobs = self.client.get_all_job_properties(all_users=False)
             for job in jobs:
                 if job.name == job_name:
-                    return job.job_id , self.get_job_status(job.job_id)  # Log current status
+                    return job.job_id, self.get_job_status(job.job_id)  # Log current status
             self.logger.warning(f"No job found with name: {job_name}")
             return None
         except Exception as e:
             self.logger.error(f"Failed to get job status by name {job_name}: {str(e)}")
             raise AirflowException(f"Failed to get job status by name: {str(e)}")
-
 
 
 class NextflowCommandBuilder:
@@ -490,13 +496,13 @@ class NextflowCommandBuilder:
         Returns:
             Complete Nextflow command string
         """
-        task_try_number = context['ti'].try_number
+        task_try_number = context["ti"].try_number
         bash_cmd_file = os.path.join(work_dir, f".{job_name}.sh")
         name = f"{job_name}_{task_try_number}"
 
         # Indent command
         indented_command = "\n".join("\t\t" + line for line in base_command.rstrip().splitlines())
-        #Todo: Nextflow Notification system :
+        # Todo: Nextflow Notification system :
         """
         -plugins "{nf_plugin_version}" \\
         -with-weblog "{web_log_uri}" \\
@@ -571,7 +577,7 @@ class SlackNotificationService:
             Formatted message string
         """
         try:
-            dag_run = context['dag_run']
+            dag_run = context["dag_run"]
             dag_run_conf = dag_run.conf
             species_list = dag_run_conf.get("species", [])
             genome_uuids_list = dag_run_conf.get("genome_uuid", [])
@@ -580,7 +586,7 @@ class SlackNotificationService:
             log_url = f"{base_url}dags/{context['ti'].dag_id}/grid?dag_run_id={context['ti'].run_id}&task_id={context['ti'].task_id}&tab=logs"
 
             # Check if skipped
-            if context['ti'].task_id in dag_run_conf.get("skip_pipeline", []):
+            if context["ti"].task_id in dag_run_conf.get("skip_pipeline", []):
                 return f"""
                 ({env}) ✅ Pipeline/Job {self.slurm_config.user}_{job_info.job_name} Skipped
                 `SpeciesList: {",".join(species_list)}`
@@ -589,7 +595,7 @@ class SlackNotificationService:
                 """
 
             # Fetch ES record
-            record = self._fetch_es_record(job_info.job_name, context['ti'].try_number)
+            record = self._fetch_es_record(job_info.job_name, context["ti"].try_number)
 
             if not record:
                 return f"""
@@ -597,7 +603,9 @@ class SlackNotificationService:
                 Check codon airflow log: {os.path.join(self.slurm_config.cwd, self.slurm_config.log_directory)}
                 """
 
-            return self._format_message_from_record(record, job_info, species_list, genome_uuids_list, env, context)
+            return self._format_message_from_record(
+                record, job_info, species_list, genome_uuids_list, env, context
+            )
 
         except Exception as e:
             self.logger.error(f"Error preparing notification message: {str(e)}")
@@ -616,7 +624,7 @@ class SlackNotificationService:
                 conn.password,
                 "nextflow_logs",
                 run_name=full_job_name,
-                event_status=["completed"]
+                event_status=["completed"],
             )
             return record
         except Exception as e:
@@ -630,7 +638,7 @@ class SlackNotificationService:
         species_list: List[str],
         genome_uuids_list: List[str],
         env: str,
-        context: Context
+        context: Context,
     ) -> str:
         """Format message from ES record."""
         workflow = record.get("metadata", {}).get("workflow", {})
@@ -638,13 +646,12 @@ class SlackNotificationService:
         es_status = workflow.get("success")
 
         result = "\n".join(
-            f"{item['name']} | {item['hash']} | Succeeded: {item['succeeded']}"
-            for item in process_list
+            f"{item['name']} | {item['hash']} | Succeeded: {item['succeeded']}" for item in process_list
         )
 
         hive_gui = f"http://guihive.ebi.ac.uk:8080/versions/97/?driver=mysql&username=ensro&host=mysql-ens-hive-prod-1&port=4575&dbname={self.slurm_config.user}_{job_info.job_name.lower()}"
 
-        if es_status and job_info.status == 'COMPLETED':
+        if es_status and job_info.status == "COMPLETED":
             return f"""
             ({env}) ✅ Pipeline {self.slurm_config.user}_{job_info.job_name} completed successfully
             {hive_gui if context['ti'].task.task_type == 'HiveNextflowOperator' else ""}
@@ -692,9 +699,9 @@ class AirflowExceptionWithSlackNotification(AirflowException):
             ti = context.get("task_instance")
             dag_run = context.get("dag_run")
             dag_run_conf = dag_run.conf
-            slack_notification_enable = dag_run_conf.get("slack_notification_enable",
-                                                         Variable.get("slack_notification_enable", default=True)
-                                                        )
+            slack_notification_enable = dag_run_conf.get(
+                "slack_notification_enable", Variable.get("slack_notification_enable", default=True)
+            )
             if slack_notification_enable:
                 logging.info(f"{ti}")
                 # data_interval_end may not be present in test contexts; guard it
@@ -715,14 +722,18 @@ class AirflowExceptionWithSlackNotification(AirflowException):
                 except Exception as e:
                     logging.error(f"Failed to post Slack message: {str(e)}")
             else:
-                logging.info("""
+                logging.info(
+                    """
                 To enable Slack notifications, set the global variable 'slack_notification_enable' to True.
                 Alternatively, you can pass the 'slack_notification_enable' parameter in the dag_run configuration.
-                """)
-                logging.info(f"""
+                """
+                )
+                logging.info(
+                    f"""
                 Task: {ti.task_id} Completed with status: {status}
                 Message: {message}
-                """)
+                """
+                )
         except Exception as e:
             logging.error(f"Failed to send Slack notification: {str(e)}")
 
@@ -773,7 +784,12 @@ class EnsemblBashOperator(BashOperator):
     """
 
     template_fields: Sequence[str] = (
-        "bash_command", "env", "cwd", "slurm_uri", "slurm_api_version", "slurm_user",
+        "bash_command",
+        "env",
+        "cwd",
+        "slurm_uri",
+        "slurm_api_version",
+        "slurm_user",
     )
 
     def __init__(
@@ -812,12 +828,18 @@ class EnsemblBashOperator(BashOperator):
 
         # Build configurations
         self.slurm_config = self.slurm_config_builder.build(
-            slurm_uri, slurm_api_version, slurm_user, slurm_jwt,
-            cwd, partition, time_limit, memory_per_node, log_directory
+            slurm_uri,
+            slurm_api_version,
+            slurm_user,
+            slurm_jwt,
+            cwd,
+            partition,
+            time_limit,
+            memory_per_node,
+            log_directory,
         )
         self.notification_config = self.notification_config_builder.build(
-            slack_conn_id, web_log_uri, nf_hive_script_path,
-            required_log_conn_id, log_conn_id
+            slack_conn_id, web_log_uri, nf_hive_script_path, required_log_conn_id, log_conn_id
         )
 
         # Expose for Airflow templating
@@ -850,20 +872,42 @@ class EnsemblBashOperator(BashOperator):
             f"with API version {self.slurm_config.api_version} at {self.slurm_config.url}"
         )
 
+    def _prepare_slurm_job(self, context: Context) -> None:
+        """
+        Prepare the SLURM job runtime configuration.
+        Updates environment, run_defer, and job_name.
+        """
+        # Dynamically update SLURM client environment with user env and env_vars
+        current_env = self.slurm_config.env.copy()
+        if hasattr(self, "env") and self.env:
+            current_env.update(self.env)
+
+        if self.env_vars:
+            if isinstance(self.env_vars, dict):
+                current_env.update(self.env_vars)
+            elif isinstance(self.env_vars, list):
+                for item in self.env_vars:
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        current_env[k] = v
+
+        self.job_service.client._parameters["environment"] = current_env
+
+        dag_run = context["dag_run"]
+        dag_run_conf = dag_run.conf or {}
+
+        # Update run_defer from config
+        self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
+
+        # Parse job name
+        self.job_name = self.parser.parse_job_name(context, self.job_name)
+
     def pre_execute(self, context: Context) -> None:
         """Prepare command before execution."""
         try:
             logging.info("Preparing command for execution")
 
-            dag_run = context['dag_run']
-            dag_run_conf = dag_run.conf
-
-            # Update run_defer from config
-            self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
-
-            # Parse job name
-            self.job_name = self.parser.parse_job_name(context, self.job_name)
-
+            self._prepare_slurm_job(context)
 
             # Build command - skip Nextflow wrapping if use_nextflow is False
             if self.use_nextflow:
@@ -888,9 +932,7 @@ class EnsemblBashOperator(BashOperator):
         except Exception as e:
             logging.error(f"Error in pre_execute: {str(e)}")
             raise AirflowExceptionWithSlackNotification(
-                f"Error during pre_execute: {str(e)}",
-                context,
-                self.notification_config.slack_conn_id
+                f"Error during pre_execute: {str(e)}", context, self.notification_config.slack_conn_id
             )
 
     def execute(self, context: Context) -> Any:
@@ -898,8 +940,8 @@ class EnsemblBashOperator(BashOperator):
         try:
             logging.info(f"Executing job '{self.job_name}'")
 
-            task_instance = context['ti']
-            dag_run = context['dag_run']
+            task_instance = context["ti"]
+            dag_run = context["dag_run"]
             dag_run_conf = dag_run.conf
 
             # Check for skip
@@ -913,25 +955,30 @@ class EnsemblBashOperator(BashOperator):
             # Check Slurm Jobs Already Running with the same name to avoid resubmission and monitor the existing one instead
             logging.info(f"Checking for existing SLURM jobs with name '{self.job_name}'")
             existing_job = self.job_service.get_job_status_and_id_by_name(self.job_name)
-            if existing_job is not None and existing_job[1] not in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
+            if existing_job is not None and existing_job[1] not in [
+                "COMPLETED",
+                "FAILED",
+                "CANCELLED",
+                "TIMEOUT",
+            ]:
                 self.job_info = JobInfo(
                     job_id=existing_job[0],
                     job_name=self.job_name,
                     bash_command=self.ensembl_cmd,
-                    status=existing_job[1]
+                    status=existing_job[1],
                 )
                 logging.warning(f"Found existing SLURM jobs with name '{self.job_name}': {existing_job}")
-                logging.warning(f"Monitoring Existing Job ID {existing_job[0]} with status {existing_job[1]} instead of submitting a new job")
-                logging.info(f"No existing SLURM job found with name '{self.job_name}', preparing to submit new job")
+                logging.warning(
+                    f"Monitoring Existing Job ID {existing_job[0]} with status {existing_job[1]} instead of submitting a new job"
+                )
+                logging.info(
+                    f"No existing SLURM job found with name '{self.job_name}', preparing to submit new job"
+                )
 
             else:
                 logging.info(f"Submitting a new SLURM job for '{self.job_name}'")
                 job_id = self.job_service.submit_job(self.ensembl_cmd, self.job_name)
-                self.job_info = JobInfo(
-                    job_id=job_id,
-                    job_name=self.job_name,
-                    bash_command=self.ensembl_cmd
-                )
+                self.job_info = JobInfo(job_id=job_id, job_name=self.job_name, bash_command=self.ensembl_cmd)
 
             # Push Jobs status to XCom for downstream tasks
             task_instance.xcom_push(
@@ -941,7 +988,7 @@ class EnsemblBashOperator(BashOperator):
                     "task_id": task_instance.task_id,
                     "job_name": self.job_name,
                     "user": self.slurm_config.user,
-                }
+                },
             )
 
             # Monitor job
@@ -951,16 +998,14 @@ class EnsemblBashOperator(BashOperator):
                 status = self.job_service.wait_for_job(self.job_info.job_id, period=30)
                 self.job_info.status = status
 
-                if status != 'COMPLETED':
+                if status != "COMPLETED":
                     logging.error(f"**Task: {self.job_name} Failed for slurm job_id  {job_id} **")
                     # raise ValueError(f"Job {self.job_name} failed with status {status}")
 
         except Exception as e:
             logging.error(f"Error in execute: {str(e)}")
             raise AirflowExceptionWithSlackNotification(
-                f"Failed to execute job: {str(e)}",
-                context,
-                self.notification_config.slack_conn_id
+                f"Failed to execute job: {str(e)}", context, self.notification_config.slack_conn_id
             )
 
     def _defer_monitoring(self, context: Context, job_id: int) -> None:
@@ -983,7 +1028,7 @@ class EnsemblBashOperator(BashOperator):
         event: Optional[Dict[str, Any]] = None,
         job_id: int = None,
         job_name: str = None,
-        bash_command: str = None
+        bash_command: str = None,
     ) -> Any:
         """Monitor deferred job."""
         try:
@@ -991,32 +1036,27 @@ class EnsemblBashOperator(BashOperator):
             status = slurm_job_status.status
 
             self.job_info = JobInfo(
-                job_id=job_id,
-                job_name=job_name,
-                bash_command=bash_command,
-                status=status
+                job_id=job_id, job_name=job_name, bash_command=bash_command, status=status
             )
 
             # Check if terminal state
-            terminal_states = {'FAILED', 'COMPLETED', 'CANCELLED', 'TIMEOUT'}
+            terminal_states = {"FAILED", "COMPLETED", "CANCELLED", "TIMEOUT"}
             if status not in terminal_states:
                 logging.info(f"Job {job_id} status: {status}, continuing to monitor")
                 self.defer(
                     trigger=TimeDeltaTrigger(timedelta(seconds=self.check_interval)),
                     method_name="_monitor_job",
-                    kwargs={'job_id': job_id, 'job_name': job_name, 'bash_command': bash_command}
+                    kwargs={"job_id": job_id, "job_name": job_name, "bash_command": bash_command},
                 )
 
             logging.info(f"Job {job_id} reached terminal state: {status}")
 
-            if status != 'COMPLETED':
+            if status != "COMPLETED":
                 logging.error(f"**Task: {job_name} Failed for slurm job_id  {job_id} **")
 
         except Exception as e:
             raise AirflowExceptionWithSlackNotification(
-                str(e),
-                context,
-                self.notification_config.slack_conn_id
+                str(e), context, self.notification_config.slack_conn_id
             )
 
     def post_execute(self, context: Any, result: Any = None) -> None:
@@ -1036,17 +1076,17 @@ class EnsemblBashOperator(BashOperator):
         try:
 
             logging.info("Fetching Logs from slurm .......")
-            #Todo: Copy the logs to the log directory by another slurm job
+            # Todo: Copy the logs to the log directory by another slurm job
             copy_job_status = self.copy_k8s_logs()
 
-            if copy_job_status == 'COMPLETED':
-                #Todo: read the log file from the k8s mounted /nfs/public
+            if copy_job_status == "COMPLETED":
+                # Todo: read the log file from the k8s mounted /nfs/public
                 logging.info(f"Logs copied successfully for job {self.job_info.job_name}")
                 logging.info("************************Slurm Logs****************************************")
                 # Open and read the log files from the k8s log directory and push to xcom for notification
                 slurm_log_file = f"/opt/airflow/codon/ens_automation/k8s_logs/{self.job_info.job_name}.{self.job_info.job_id}.out"
                 if os.path.exists(slurm_log_file):
-                    with open(slurm_log_file, 'r') as f:
+                    with open(slurm_log_file, "r") as f:
                         for line in f:
                             logging.info(line.strip())
                 else:
@@ -1055,29 +1095,29 @@ class EnsemblBashOperator(BashOperator):
             else:
                 logging.error(f"Log Files copy job failed with status: {copy_job_status}")
 
-            if self.job_info.status != 'COMPLETED':
+            if self.job_info.status != "COMPLETED":
                 logging.error(msg)
                 raise ValueError(f"{msg}")
             logging.info(msg)
         except Exception as e:
             logging.info(msg)
             raise AirflowExceptionWithSlackNotification(
-                str(e),
-                context,
-                self.notification_config.slack_conn_id
+                str(e), context, self.notification_config.slack_conn_id
             )
-
 
     def copy_k8s_logs(self):
         """Copy logs from the job directory to the k8s log directory"""
         k8s_log_location = "/nfs/public/rw/ens_automation/k8s_logs/"
-        slurm_copy_client = SlurmClientFactory.create_client(self.slurm_config, f"{self.job_info.job_name}_copy_logs")
+        slurm_copy_client = SlurmClientFactory.create_client(
+            self.slurm_config, f"{self.job_info.job_name}_copy_logs"
+        )
         slurm_copy_client._parameters["partition"] = "datamover"
         job_service = SlurmJobService(slurm_copy_client, 90)
         copy_command = f"cp -r {self.cwd}/{self.log_directory}/{self.job_info.job_name}.{self.job_info.job_id}.*  {k8s_log_location} "
         copy_job_id = job_service.submit_job(copy_command, f"{self.job_info.job_name}_copy_logs")
         logging.info(
-            f"Copying logs for job {self.job_info.job_name} from {self.cwd}/{self.log_directory}/ to {k8s_log_location}")
+            f"Copying logs for job {self.job_info.job_name} from {self.cwd}/{self.log_directory}/ to {k8s_log_location}"
+        )
         copy_job_status = self.job_service.wait_for_job(copy_job_id, period=5)
 
         return copy_job_status
