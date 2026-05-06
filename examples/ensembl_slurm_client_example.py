@@ -145,3 +145,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+SLURM_URL = "https://codon-slurm-restd.ebi.ac.uk"
+USER = "ens2020"
+TOKEN = "your_api_token_here"  # Replace with your actual API token
