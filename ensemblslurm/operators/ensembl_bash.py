@@ -949,6 +949,9 @@ class EnsemblBashOperator(BashOperator):
             if task_name in dag_run_conf.get("skip_pipeline", []):
                 logging.info(f"Skipping task {task_instance.task_id}")
                 task_instance.state = State.SKIPPED
+                self.job_info  = JobInfo(
+                    job_id=1, job_name=self.job_name, bash_command=self.ensembl_cmd, status="SKIPPED"
+                )
                 return
 
             # Submit a job if not already running
@@ -1052,7 +1055,7 @@ class EnsemblBashOperator(BashOperator):
             logging.info(f"Job {job_id} reached terminal state: {status}")
 
             if status != "COMPLETED":
-                logging.error(f"**Task: {job_name} Failed for slurm job_id  {job_id} **")
+                logging.error(f"**Task: {job_name} Failed for slurm job_id  {job_id} with slurm status {status}**")
 
         except Exception as e:
             raise AirflowExceptionWithSlackNotification(
@@ -1074,6 +1077,10 @@ class EnsemblBashOperator(BashOperator):
             """
 
         try:
+            if self.job_info.status == "SKIPPED":
+                logging.info(f"Task {self.task_id} was skipped, no logs to fetch")
+                logging.info(msg)
+                return
 
             logging.info("Fetching Logs from slurm .......")
             # Todo: Copy the logs to the log directory by another slurm job

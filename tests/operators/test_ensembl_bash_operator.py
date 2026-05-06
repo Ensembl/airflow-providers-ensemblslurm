@@ -1032,10 +1032,20 @@ class TestEnsemblBashOperator:
         )
         operator.ensembl_cmd = "echo 'prepared'"
         operator.job_name = "test_job"
+        operator.job_service = Mock()
 
         result = operator.execute(mock_context)
 
+        assert result is None
         assert mock_context['ti'].state == State.SKIPPED
+        assert operator.job_info == JobInfo(
+            job_id=1,
+            job_name="test_job",
+            bash_command="echo 'prepared'",
+            status="SKIPPED",
+        )
+        operator.job_service.get_job_status_and_id_by_name.assert_not_called()
+        operator.job_service.submit_job.assert_not_called()
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch('ensemblslurm.operators.ensembl_bash.Variable')
@@ -1085,6 +1095,29 @@ class TestEnsemblBashOperator:
 
         # Should not raise
         operator.post_execute(mock_context)
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_post_execute_skipped(self, mock_factory, mock_context):
+        """Test post_execute skips log fetching for skipped jobs."""
+        operator = EnsemblBashOperator(
+            task_id="test_task",
+            bash_command="echo 'test'",
+        )
+        operator.job_name = "test_job"
+        operator.job_info = JobInfo(
+            job_id=1,
+            job_name="test_job",
+            bash_command="echo 'test'",
+            status="SKIPPED"
+        )
+        operator.copy_k8s_logs = Mock()
+
+        # Should not raise
+        operator.post_execute(mock_context)
+
+        operator.copy_k8s_logs.assert_not_called()
+        mock_factory.create_client.assert_not_called()
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
