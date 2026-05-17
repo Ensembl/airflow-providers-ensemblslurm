@@ -695,7 +695,7 @@ class AirflowExceptionWithSlackNotification(AirflowException):
         self.message = message
 
         try:
-            logging.info(f"************************8Slack Notification {message}.......................")
+            logging.info(f"************************Slack Notification*******************")
             ti = context.get("task_instance")
             dag_run = context.get("dag_run")
             dag_run_conf = dag_run.conf
@@ -1091,13 +1091,16 @@ class EnsemblBashOperator(BashOperator):
                 logging.info(f"Logs copied successfully for job {self.job_info.job_name}")
                 logging.info("************************Slurm Logs****************************************")
                 # Open and read the log files from the k8s log directory and push to xcom for notification
-                slurm_log_file = f"/opt/airflow/codon/ens_automation/k8s_logs/{self.job_info.job_name}.{self.job_info.job_id}.out"
-                if os.path.exists(slurm_log_file):
-                    with open(slurm_log_file, "r") as f:
-                        for line in f:
-                            logging.info(line.strip())
-                else:
-                    logging.warning(f"Log file {slurm_log_file} not found in k8s log directory")
+                base_path = "/opt/airflow/codon/ens_automation/k8s_logs/"
+                slurm_log_files =  [f"{self.job_info.job_name}.{self.job_info.job_id}.out", f"{self.job_info.job_name}.{self.job_info.job_id}.err"]
+                for slurm_log_file in slurm_log_files:
+                    slurm_log_file = os.path.join(base_path, slurm_log_file)
+                    if os.path.exists(slurm_log_file):
+                        with open(slurm_log_file, "r") as f:
+                            for line in f:
+                                logging.info(line.strip())
+                    else:
+                        logging.warning(f"Log file {slurm_log_file} not found in k8s log directory")
 
             else:
                 logging.error(f"Log Files copy job failed with status: {copy_job_status}")
