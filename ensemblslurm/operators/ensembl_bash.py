@@ -29,6 +29,7 @@ class JobStatus(str, Enum):
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
     SKIPPED = "SKIPPED"
+    OUT_OF_MEMORY = "OUT_OF_MEMORY"
 
 
 @dataclass
@@ -1043,7 +1044,7 @@ class EnsemblBashOperator(BashOperator):
             )
 
             # Check if terminal state
-            terminal_states = {"FAILED", "COMPLETED", "CANCELLED", "TIMEOUT"}
+            terminal_states = {"FAILED", "COMPLETED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "REVOKED", "SPECIAL_EXIT", "PREEMPTED"}
             if status not in terminal_states:
                 logging.info(f"Job {job_id} status: {status}, continuing to monitor")
                 self.defer(
