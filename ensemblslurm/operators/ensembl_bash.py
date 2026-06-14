@@ -1124,7 +1124,12 @@ class EnsemblBashOperator(BashOperator):
         )
         slurm_copy_client._parameters["partition"] = "datamover"
         job_service = SlurmJobService(slurm_copy_client, 90)
-        copy_command = f"cp -r {self.cwd}/{self.log_directory}/{self.job_info.job_name}.{self.job_info.job_id}.*  {k8s_log_location} "
+        copy_sources = [
+            f"{self.cwd}/{self.log_directory}/{self.job_info.job_name}.{self.job_info.job_id}.*",
+            f"{self.cwd}/{self.job_info.job_name}/{self.job_info.job_name}_*_report.html",
+            f"{self.cwd}/{self.job_info.job_name}_*_report.html",
+        ]
+        copy_command = f"shopt -s nullglob; cp -r {' '.join(copy_sources)}  {k8s_log_location} "
         copy_job_id = job_service.submit_job(copy_command, f"{self.job_info.job_name}_copy_logs")
         logging.info(
             f"Copying logs for job {self.job_info.job_name} from {self.cwd}/{self.log_directory}/ to {k8s_log_location}"

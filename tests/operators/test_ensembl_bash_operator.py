@@ -1121,6 +1121,39 @@ class TestEnsemblBashOperator:
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_copy_k8s_logs_copies_reports(self, mock_factory):
+        """Test copy job includes Nextflow report HTML files."""
+        copy_client = Mock()
+        copy_client._parameters = {"name": "test_job_copy_logs"}
+        mock_factory.create_client.return_value = copy_client
+
+        operator = EnsemblBashOperator(
+            task_id="test_task",
+            bash_command="echo 'test'",
+            cwd="/test/work",
+            log_directory="airflow_logs",
+        )
+        operator.job_service = Mock()
+        operator.job_service.wait_for_job.return_value = "COMPLETED"
+        operator.job_info = JobInfo(
+            job_id="12345",
+            job_name="test_job",
+            bash_command="echo 'test'",
+            status="COMPLETED",
+        )
+
+        status = operator.copy_k8s_logs()
+
+        assert status == "COMPLETED"
+        copy_client.submit_script.assert_called_once()
+        copy_command = copy_client.submit_script.call_args.args[0]
+        assert "shopt -s nullglob" in copy_command
+        assert "/test/work/airflow_logs/test_job.12345.*" in copy_command
+        assert "/test/work/test_job/test_job_*_report.html" in copy_command
+        assert "/test/work/test_job_*_report.html" in copy_command
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
     def test_on_kill(self, mock_factory):
         """Test on_kill logs warning."""
         operator = EnsemblBashOperator(

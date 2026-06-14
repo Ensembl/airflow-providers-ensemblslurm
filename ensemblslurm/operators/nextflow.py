@@ -55,6 +55,8 @@ class DynamicNextflowCommandBuilder(ICommandBuilder):
             [
                 f"-work-dir {work_dir}",
                 f"-name {job_name}_{task_try_number}",
+                f"-with-report {work_dir}/{job_name}_{task_try_number}_report.html",
+                f"-with-trace {work_dir}/{job_name}_{task_try_number}_trace.txt",
                 "-resume",
             ]
         )
