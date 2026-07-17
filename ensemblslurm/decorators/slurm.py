@@ -25,8 +25,8 @@ import os
 import textwrap
 from typing import Any, Callable, Mapping, Sequence
 
-from airflow.decorators.base import DecoratedOperator, TaskDecorator, task_decorator_factory
-from airflow.utils.context import Context
+from airflow.sdk import Context
+from airflow.sdk.bases.decorator import DecoratedOperator, TaskDecorator, task_decorator_factory
 
 from ensemblslurm.operators.ensembl_bash import EnsemblBashOperator
 

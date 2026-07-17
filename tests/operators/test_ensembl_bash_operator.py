@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, Mock, patch, PropertyMock, call
 from typing import Dict, Any
 
 from airflow.exceptions import AirflowException
-from airflow.utils.context import Context
+from airflow.sdk import Context
 from airflow.utils.state import State
 
 # Import classes to test

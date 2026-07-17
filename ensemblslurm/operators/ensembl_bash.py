@@ -10,9 +10,8 @@ from airflow.exceptions import AirflowException
 from airflow.models.taskinstance import TaskInstance
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.standard.triggers.temporal import TimeDeltaTrigger
-from airflow.sdk import Variable
+from airflow.sdk import Context, Variable
 from airflow.sdk.bases.hook import BaseHook
-from airflow.utils.context import Context
 from airflow.utils.session import provide_session
 from airflow.utils.state import State
 from ensemblslurm.clients import EnsemblSlurmRestClient

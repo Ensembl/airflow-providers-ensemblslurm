@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import Sequence, Optional
-from airflow.utils.context import Context
+from airflow.sdk import Context
 from airflow.models import Variable
 from ensemblslurm.operators.ensembl_bash import (
     EnsemblBashOperator,

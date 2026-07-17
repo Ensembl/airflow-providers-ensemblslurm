@@ -3,7 +3,7 @@ import logging
 from airflow.models import Variable
 from typing import Sequence, Optional
 from ensemblslurm.operators.ensembl_bash import ICommandBuilder
-from airflow.utils.context import Context
+from airflow.sdk import Context
 from ensemblslurm.operators.ensembl_bash import (
     EnsemblBashOperator,
     ICommandBuilder,
