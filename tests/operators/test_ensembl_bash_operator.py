@@ -286,13 +286,17 @@ class TestConfigurationParser:
         with pytest.raises(AirflowException, match="not valid"):
             parser.parse_job_name(mock_context)
 
-    def test_parse_job_name_too_long(self, mock_context):
-        """Test job name validation fails when too long."""
+    def test_parse_job_name_no_generic_length_limit(self, mock_context):
+        """
+        Test that parse_job_name itself doesn't cap length: the 80-char limit
+        is a Hive/eHive pipeline_name constraint, enforced only by
+        HiveCommandPreparer.prepare() (see test_hive_operator.py), not here.
+        """
         parser = ConfigurationParser()
         mock_context['dag_run'].dag_id = "a" * 300
 
-        with pytest.raises(AirflowException, match="exceeds max length"):
-            parser.parse_job_name(mock_context)
+        job_name = parser.parse_job_name(mock_context)
+        assert len(job_name) > 80
 
     def test_parse_job_name_special_chars_removed(self, mock_context):
         """Test special characters are removed from job name."""
@@ -315,21 +319,15 @@ class TestConfigurationParser:
         with pytest.raises(AirflowException, match="not valid"):
             parser.parse_job_name(mock_context)
 
-    def test_parse_job_name_max_80_chars(self, mock_context):
-        """Test job name at exactly 80 characters is valid."""
+    def test_parse_job_name_long_dag_id_still_valid_format(self, mock_context):
+        """Test a long-but-well-formed job name still passes format validation."""
         parser = ConfigurationParser()
-        # Create a job name that will be exactly 80 chars
         mock_context['dag_run'].dag_id = "a" * 30
         mock_context['ti'].task_id = "b" * 30
-        mock_context['dag_run'].run_id = "c" * 15  # approximately 80 total
+        mock_context['dag_run'].run_id = "c" * 15
 
-        # Should not raise if <= 80 chars
-        try:
-            job_name = parser.parse_job_name(mock_context)
-            assert len(job_name) <= 255
-        except AirflowException:
-            # If it exceeds 80, it should fail with proper message
-            pass
+        job_name = parser.parse_job_name(mock_context)
+        assert job_name == ("a" * 30 + "_" + "b" * 30 + "_" + "c" * 15)
 
 
 class TestSlurmConfigBuilder:

@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 class HiveCommandPreparer:
     """Parses and prepares Hive init_pipeline command."""
 
+    # eHive's -pipeline_name becomes the pipeline database name, which is
+    # length-limited (MySQL identifier limits etc). This is a Hive-specific
+    # constraint, not a general SLURM job name one, so it's enforced here
+    # rather than in the shared ConfigurationParser.parse_job_name.
+    MAX_PIPELINE_NAME_LENGTH = 80
+
     def prepare(
         self,
         bash_command: str,
@@ -55,6 +61,11 @@ class HiveCommandPreparer:
 
         # Add pipeline name
         if job_name:
+            if len(job_name) > self.MAX_PIPELINE_NAME_LENGTH:
+                raise ValueError(
+                    f"Job name '{job_name}' exceeds max length of "
+                    f"{self.MAX_PIPELINE_NAME_LENGTH} characters required for Hive pipeline_name"
+                )
             pipeline_command += f" -pipeline_name {job_name.lower()}"
 
         # Add dynamic params

@@ -230,16 +230,17 @@ class ConfigurationParser:
 
         job_name = f"{dag_run.dag_id}_{task_id}_{run_id}".lower()
 
-        # Check length before other validations
-        if len(job_name) > 80:
-            raise AirflowException(f"Job name exceeds max length of 80 characters")
+        # Note: the 80-character limit is a Hive/eHive pipeline_name constraint,
+        # not a general SLURM job name constraint - it's enforced in
+        # HiveCommandPreparer.prepare() instead, so it only applies to
+        # HiveNextflowOperator.
 
         # Validate job name format: must start with lowercase letter and only contain valid chars
         if not re.match("^[a-z][a-z0-9_-]*$", job_name):
             raise AirflowException(
                 f"Job name {job_name} is not valid. "
                 f"Must start with lowercase letter, contain only lowercase letters, digits, hyphens, "
-                f"and underscores, with max length 80."
+                f"and underscores."
             )
 
         return job_name

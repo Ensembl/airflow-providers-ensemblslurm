@@ -94,6 +94,39 @@ class TestHiveCommandPreparer:
 
         assert "-pipeline_name test_job" in pipeline_cmd
 
+    def test_prepare_pipeline_name_within_limit_ok(self):
+        """Test a job_name at exactly the 80-char limit is accepted."""
+        preparer = HiveCommandPreparer()
+        job_name = "a" * 80
+
+        _, pipeline_cmd = preparer.prepare(
+            bash_command="init_pipeline.pl MyPipeline::Conf",
+            dag_run_conf={},
+            job_name=job_name,
+            prepare_pipeline_param_by="genome_uuid",
+        )
+
+        assert f"-pipeline_name {job_name}" in pipeline_cmd
+
+    def test_prepare_pipeline_name_exceeds_limit_raises(self):
+        """
+        Test that a job_name over 80 chars raises ValueError: eHive's
+        -pipeline_name becomes the pipeline database name, which has a length
+        limit. This is enforced only here (Hive-specific), not in the shared
+        ConfigurationParser.parse_job_name used by EnsemblBashOperator /
+        NextflowOperator (see test_ensembl_bash_operator.py).
+        """
+        preparer = HiveCommandPreparer()
+        job_name = "a" * 81
+
+        with pytest.raises(ValueError, match="exceeds max length of 80"):
+            preparer.prepare(
+                bash_command="init_pipeline.pl MyPipeline::Conf",
+                dag_run_conf={},
+                job_name=job_name,
+                prepare_pipeline_param_by="genome_uuid",
+            )
+
     def test_prepare_missing_init_pipeline_raises(self):
         """Test that missing init_pipeline.pl raises ValueError."""
         preparer = HiveCommandPreparer()
@@ -380,6 +413,31 @@ class TestHiveNextflowOperator:
 
         assert operator.job_name == "my_hive_job"
         assert "-pipeline_name my_hive_job" in operator.ensembl_cmd
+
+    @patch('ensemblslurm.operators.hive.Variable')
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'}, clear=False)
+    def test_pre_execute_job_name_over_80_chars_raises_with_slack_notification(
+        self, mock_factory, mock_variable, mock_context
+    ):
+        """
+        End-to-end regression test: a job_name over the 80-char Hive
+        pipeline_name limit surfaces as AirflowExceptionWithSlackNotification
+        from pre_execute (not silently truncated or ignored).
+        """
+        mock_variable.get.return_value = "ens-nf-weblog@2.10.2"
+
+        operator = HiveNextflowOperator(
+            task_id="hive_task",
+            bash_command="init_pipeline.pl MyPipeline::Conf",
+            job_name="a" * 81,
+        )
+
+        with patch('ensemblslurm.operators.ensembl_bash.EnsemblSlackNotifier'), \
+             patch('ensemblslurm.operators.ensembl_bash.Variable') as mock_bash_var:
+            mock_bash_var.get.return_value = False
+            with pytest.raises(AirflowExceptionWithSlackNotification, match="exceeds max length of 80"):
+                operator.pre_execute(mock_context)
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch.dict(os.environ, {'SLURM_JWT': 'test-token'}, clear=False)
