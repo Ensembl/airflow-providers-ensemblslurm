@@ -1,9 +1,8 @@
 import os
 import logging
-from airflow.models import Variable
 from typing import Sequence, Optional
 from ensemblslurm.operators.ensembl_bash import ICommandBuilder
-from airflow.sdk import Context
+from airflow.sdk import Context, Variable
 from ensemblslurm.operators.ensembl_bash import (
     EnsemblBashOperator,
     ICommandBuilder,
@@ -103,7 +102,7 @@ class HiveNextflowCommandBuilder(ICommandBuilder):
             raise ValueError("Missing required params")
 
         nf_plugin_version = Variable.get(
-            "nf_plugin", default_var="ens-nf-weblog@2.10.2"
+            "nf_plugin", default="ens-nf-weblog@2.10.2"
         )
 
         variable_cmd, hive_cmd = self.preparer.prepare(

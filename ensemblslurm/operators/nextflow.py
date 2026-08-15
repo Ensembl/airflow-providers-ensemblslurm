@@ -1,8 +1,7 @@
 import os
 import logging
 from typing import Sequence, Optional
-from airflow.sdk import Context
-from airflow.models import Variable
+from airflow.sdk import Context, Variable
 from ensemblslurm.operators.ensembl_bash import (
     EnsemblBashOperator,
     ICommandBuilder,
@@ -34,7 +33,7 @@ class DynamicNextflowCommandBuilder(ICommandBuilder):
             raise ValueError("Missing required params: work_dir or web_log_uri")
 
         nf_plugin_version = Variable.get(
-            "nf_plugin", default_var="ens-nf-weblog@2.10.2"
+            "nf_plugin", default="ens-nf-weblog@2.10.2"
         )
 
         dynamic_args = []
