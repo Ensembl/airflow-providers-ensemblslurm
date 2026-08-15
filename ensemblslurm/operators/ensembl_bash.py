@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -18,6 +19,35 @@ from ensemblslurm.clients import EnsemblSlurmRestClient
 from ensemblslurm.clients.ensembl_slurmdb_api.ensembl_slurm_client import SlurmJobStatus
 from ensemblslurm.clients.es_client import fetch_latest_event_record
 from ensemblslurm.hooks.ensembl_slack import EnsemblSlackNotifier
+
+
+def format_kv_table(title: str, rows: List[tuple], width: int = 88) -> str:
+    """
+    Render a title + aligned "key : value" rows as a boxed, monospace-friendly
+    table for readable task log output.
+
+    Args:
+        title: Table heading, printed inside the top border
+        rows: Sequence of (label, value) pairs. A row of (None, text) is
+            rendered as a free-form line (no "key :" alignment) - handy for
+            a trailing multi-line block such as a bash command.
+        width: Total line width for the border rules
+
+    Returns:
+        Multi-line formatted table string, ready to pass to logging
+    """
+    border = "=" * width
+    key_width = max((len(str(k)) for k, _ in rows if k), default=0)
+
+    lines = [border, f" {title}", border]
+    for key, value in rows:
+        if key is None:
+            lines.append(str(value))
+        else:
+            lines.append(f" {str(key).ljust(key_width)} : {value}")
+    lines.append(border)
+
+    return "\n".join(lines)
 
 
 class JobStatus(str, Enum):
@@ -1065,16 +1095,19 @@ class EnsemblBashOperator(BashOperator):
     def post_execute(self, context: Any, result: Any = None) -> None:
         """Post-execution operations."""
 
-        msg = f"""
-            Post execution....
-            Task: {self.task_id} / {self.job_info.job_name}
-            Job {self.job_info.job_id} completed with status {self.job_info.status}
-            For provided command: 
-            {self.bash_command}
-            More info in logs :
-            Logs: {self.cwd}/{self.log_directory}/{self.job_name}
-            CWD:  {self.cwd}/{self.job_name}/
-            """
+        msg = format_kv_table(
+            "POST EXECUTION SUMMARY",
+            [
+                ("Task", self.task_id),
+                ("Job Name", self.job_info.job_name),
+                ("Job ID", self.job_info.job_id),
+                ("Status", self.job_info.status),
+                ("Log Directory", f"{self.cwd}/{self.log_directory}/{self.job_name}"),
+                ("CWD", f"{self.cwd}/{self.job_name}/"),
+                (None, " Command:"),
+                (None, textwrap.indent(self.bash_command.strip(), "   ")),
+            ],
+        )
 
         try:
             if self.job_info.status == "SKIPPED":

@@ -35,6 +35,7 @@ from ensemblslurm.operators.ensembl_bash import (
     JobInfo,
     JobStatus,
     AirflowExceptionWithSlackNotification,
+    format_kv_table,
 )
 
 
@@ -948,6 +949,54 @@ class TestSlurmClientFactory:
 
 
 # ============================================================================
+# TEST format_kv_table
+# ============================================================================
+
+class TestFormatKvTable:
+    """Test suite for the format_kv_table log-formatting helper."""
+
+    def test_includes_title_and_border(self):
+        table = format_kv_table("MY TITLE", [("A", "1")])
+
+        lines = table.splitlines()
+        assert lines[0] == lines[-1]
+        assert set(lines[0]) == {"="}
+        assert "MY TITLE" in lines[1]
+
+    def test_aligns_keys_to_longest_label(self):
+        table = format_kv_table("T", [("A", "1"), ("Longer Key", "2")])
+
+        rows = [line for line in table.splitlines() if " : " in line]
+        # Every ":" should line up at the same column
+        colon_positions = {line.index(":") for line in rows}
+        assert len(colon_positions) == 1
+
+    def test_row_values_appear(self):
+        table = format_kv_table("T", [("Status", "COMPLETED"), ("Job ID", 42)])
+
+        assert "Status" in table
+        assert "COMPLETED" in table
+        assert "Job ID" in table
+        assert "42" in table
+
+    def test_none_key_renders_as_free_form_line(self):
+        table = format_kv_table("T", [("A", "1"), (None, "   raw block text")])
+
+        assert "raw block text" in table
+        # Free-form line shouldn't get a " : " alignment separator injected
+        assert "raw block text :" not in table
+
+    def test_empty_rows_still_has_title_and_borders(self):
+        table = format_kv_table("EMPTY", [])
+
+        # top border, title, separator border, bottom border - no row lines
+        lines = table.splitlines()
+        assert len(lines) == 4
+        assert "EMPTY" in lines[1]
+        assert all(set(line) == {"="} for line in (lines[0], lines[2], lines[3]))
+
+
+# ============================================================================
 # TEST EnsemblBashOperator
 # ============================================================================
 
@@ -1095,6 +1144,39 @@ class TestEnsemblBashOperator:
 
         # Should not raise
         operator.post_execute(mock_context)
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_post_execute_logs_tabular_summary(self, mock_factory, mock_context, caplog):
+        """Test post_execute logs a bordered, aligned key/value summary table."""
+        operator = EnsemblBashOperator(
+            task_id="test_task",
+            bash_command="echo 'test'",
+            cwd="/test/work",
+            log_directory="airflow_logs",
+        )
+        operator.job_name = "test_job"
+        operator.job_info = JobInfo(
+            job_id="12345",
+            job_name="test_job",
+            bash_command="echo 'test'",
+            status="COMPLETED"
+        )
+
+        with caplog.at_level("INFO"):
+            operator.post_execute(mock_context)
+
+        summary = next(r.message for r in caplog.records if "POST EXECUTION SUMMARY" in r.message)
+        lines = summary.splitlines()
+
+        assert lines[0] == lines[-1] == "=" * 88
+        assert " Task          : test_task" in summary
+        assert " Job Name      : test_job" in summary
+        assert " Job ID        : 12345" in summary
+        assert " Status        : COMPLETED" in summary
+        assert " Log Directory : /test/work/airflow_logs/test_job" in summary
+        assert " CWD           : /test/work/test_job/" in summary
+        assert "echo 'test'" in summary
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
