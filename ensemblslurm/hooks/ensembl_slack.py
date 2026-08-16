@@ -1,7 +1,6 @@
 import logging
 from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
-from airflow.models import Variable
-from airflow.sdk import get_current_context
+from airflow.sdk import Variable, get_current_context
 
 # Set up a logger for SlackBot operations
 logger = logging.getLogger(__name__)
@@ -47,8 +46,8 @@ class EnsemblSlackNotifier:
 
             local_dt = context.get("data_interval_end").astimezone()
 
-            base_url = Variable.get("base_url", default_var="localhost:8080")
-            env = Variable.get("environment", default_var="dev")
+            base_url = Variable.get("base_url", default="localhost:8080")
+            env = Variable.get("environment", default="dev")
 
             log_url = (
                 f"https://{base_url}/dags/{dag_name}/grid"

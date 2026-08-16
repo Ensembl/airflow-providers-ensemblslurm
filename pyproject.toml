@@ -21,11 +21,11 @@ dynamic = [
 ]
 requires-python = "~=3.10"
 dependencies = [
-    "apache-airflow==3.1.8",
+    "apache-airflow==3.3.1",
     "pyslurmutils==1.4.2",
     "elasticsearch<=6.8",
-    "apache-airflow-providers-slack==9.0.0",
-    "apache-airflow-client==3.0.2"
+    "apache-airflow-providers-slack==9.10.2",
+    "apache-airflow-client==3.3.0"
 ]
 
 [project.urls]

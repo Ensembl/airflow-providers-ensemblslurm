@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import inspect
 import os
+import shlex
 import textwrap
 from typing import Any, Callable, Mapping, Sequence
 
-from airflow.decorators.base import DecoratedOperator, TaskDecorator, task_decorator_factory
-from airflow.utils.context import Context
+from airflow.sdk import Context
+from airflow.sdk.bases.decorator import DecoratedOperator, TaskDecorator, task_decorator_factory
 
 from ensemblslurm.operators.ensembl_bash import EnsemblBashOperator
 
@@ -105,6 +106,8 @@ class _SlurmDecoratedOperator(DecoratedOperator, EnsemblBashOperator):
         # IMPORTANT: use_nextflow=False to bypass Nextflow wrapping for decorator tasks
         super().__init__(
             python_callable=self.python_callable,
+            op_args=self.op_args,
+            op_kwargs=self.op_kwargs,
             bash_command=bash_command,
             job_name=job_name,
             slurm_uri=slurm_uri,
@@ -144,6 +147,13 @@ class _SlurmDecoratedOperator(DecoratedOperator, EnsemblBashOperator):
         source = inspect.getsource(self.python_callable)
         # Remove any leading indentation
         source = textwrap.dedent(source)
+        # Strip leading decorator lines (e.g. "@ensemblslurm_task(...)"). The remote
+        # script only defines and calls the bare function, so decorators referencing
+        # names that aren't available in that exec context (like ensemblslurm_task
+        # itself) must not be shipped along with the source.
+        lines = source.splitlines()
+        def_idx = next((i for i, line in enumerate(lines) if line.lstrip().startswith("def ")), 0)
+        source = "\n".join(lines[def_idx:])
 
         # Get the function name
         func_name = self.python_callable.__name__
@@ -188,10 +198,10 @@ try:
     except (TypeError, ValueError):
         print(f"TASK_RESULT: {{repr(result)[:500]}}")  # Print first 500 chars
 
-    print(f"Task {{func_name}} completed successfully")
+    print(f"Task {func_name} completed successfully")
     sys.exit(0)
 except Exception as e:
-    print(f"Task {{func_name}} failed with error: {{e}}", file=sys.stderr)
+    print(f"Task {func_name} failed with error: {{e}}", file=sys.stderr)
     import traceback
     traceback.print_exc()
     sys.exit(1)
@@ -207,8 +217,12 @@ except Exception as e:
                 bash_commands.append(f"module load {module}")
             bash_commands.append("")  # Empty line for readability
 
-        # Add the Python execution command
-        bash_commands.append(f"python3 -c {repr(python_script)}")
+        # Add the Python execution command.
+        # NOTE: shlex.quote (not repr) is required here — the result is embedded
+        # directly in a bash command line. Bash single-quotes don't interpret
+        # backslash escapes, so repr()'s "\n" sequences would reach python3 -c
+        # as literal backslash-n text instead of real newlines.
+        bash_commands.append(f"python3 -c {shlex.quote(python_script)}")
 
         # Join all commands with newlines
         bash_command = "\n".join(bash_commands)

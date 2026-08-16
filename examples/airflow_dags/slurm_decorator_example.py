@@ -6,12 +6,9 @@ as Slurm jobs, similar to how @docker_task works for Docker containers.
 """
 
 from datetime import datetime
-from airflow import DAG
-from airflow.models import Variable
-from typing import Dict, Any
+from airflow.sdk import DAG
 from ensemblslurm.decorators import ensemblslurm_task
 from ensemblslurm.operators import EnsemblBashOperator
-from airflow.sdk import DAG
 
 
 # Create the DAG

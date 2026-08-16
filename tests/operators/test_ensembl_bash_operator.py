@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, Mock, patch, PropertyMock, call
 from typing import Dict, Any
 
 from airflow.exceptions import AirflowException
-from airflow.utils.context import Context
+from airflow.sdk import Context
 from airflow.utils.state import State
 
 # Import classes to test
@@ -35,6 +35,7 @@ from ensemblslurm.operators.ensembl_bash import (
     JobInfo,
     JobStatus,
     AirflowExceptionWithSlackNotification,
+    format_kv_table,
 )
 
 
@@ -285,13 +286,17 @@ class TestConfigurationParser:
         with pytest.raises(AirflowException, match="not valid"):
             parser.parse_job_name(mock_context)
 
-    def test_parse_job_name_too_long(self, mock_context):
-        """Test job name validation fails when too long."""
+    def test_parse_job_name_no_generic_length_limit(self, mock_context):
+        """
+        Test that parse_job_name itself doesn't cap length: the 80-char limit
+        is a Hive/eHive pipeline_name constraint, enforced only by
+        HiveCommandPreparer.prepare() (see test_hive_operator.py), not here.
+        """
         parser = ConfigurationParser()
         mock_context['dag_run'].dag_id = "a" * 300
 
-        with pytest.raises(AirflowException, match="exceeds max length"):
-            parser.parse_job_name(mock_context)
+        job_name = parser.parse_job_name(mock_context)
+        assert len(job_name) > 80
 
     def test_parse_job_name_special_chars_removed(self, mock_context):
         """Test special characters are removed from job name."""
@@ -314,21 +319,15 @@ class TestConfigurationParser:
         with pytest.raises(AirflowException, match="not valid"):
             parser.parse_job_name(mock_context)
 
-    def test_parse_job_name_max_80_chars(self, mock_context):
-        """Test job name at exactly 80 characters is valid."""
+    def test_parse_job_name_long_dag_id_still_valid_format(self, mock_context):
+        """Test a long-but-well-formed job name still passes format validation."""
         parser = ConfigurationParser()
-        # Create a job name that will be exactly 80 chars
         mock_context['dag_run'].dag_id = "a" * 30
         mock_context['ti'].task_id = "b" * 30
-        mock_context['dag_run'].run_id = "c" * 15  # approximately 80 total
+        mock_context['dag_run'].run_id = "c" * 15
 
-        # Should not raise if <= 80 chars
-        try:
-            job_name = parser.parse_job_name(mock_context)
-            assert len(job_name) <= 255
-        except AirflowException:
-            # If it exceeds 80, it should fail with proper message
-            pass
+        job_name = parser.parse_job_name(mock_context)
+        assert job_name == ("a" * 30 + "_" + "b" * 30 + "_" + "c" * 15)
 
 
 class TestSlurmConfigBuilder:
@@ -948,6 +947,54 @@ class TestSlurmClientFactory:
 
 
 # ============================================================================
+# TEST format_kv_table
+# ============================================================================
+
+class TestFormatKvTable:
+    """Test suite for the format_kv_table log-formatting helper."""
+
+    def test_includes_title_and_border(self):
+        table = format_kv_table("MY TITLE", [("A", "1")])
+
+        lines = table.splitlines()
+        assert lines[0] == lines[-1]
+        assert set(lines[0]) == {"="}
+        assert "MY TITLE" in lines[1]
+
+    def test_aligns_keys_to_longest_label(self):
+        table = format_kv_table("T", [("A", "1"), ("Longer Key", "2")])
+
+        rows = [line for line in table.splitlines() if " : " in line]
+        # Every ":" should line up at the same column
+        colon_positions = {line.index(":") for line in rows}
+        assert len(colon_positions) == 1
+
+    def test_row_values_appear(self):
+        table = format_kv_table("T", [("Status", "COMPLETED"), ("Job ID", 42)])
+
+        assert "Status" in table
+        assert "COMPLETED" in table
+        assert "Job ID" in table
+        assert "42" in table
+
+    def test_none_key_renders_as_free_form_line(self):
+        table = format_kv_table("T", [("A", "1"), (None, "   raw block text")])
+
+        assert "raw block text" in table
+        # Free-form line shouldn't get a " : " alignment separator injected
+        assert "raw block text :" not in table
+
+    def test_empty_rows_still_has_title_and_borders(self):
+        table = format_kv_table("EMPTY", [])
+
+        # top border, title, separator border, bottom border - no row lines
+        lines = table.splitlines()
+        assert len(lines) == 4
+        assert "EMPTY" in lines[1]
+        assert all(set(line) == {"="} for line in (lines[0], lines[2], lines[3]))
+
+
+# ============================================================================
 # TEST EnsemblBashOperator
 # ============================================================================
 
@@ -1095,6 +1142,39 @@ class TestEnsemblBashOperator:
 
         # Should not raise
         operator.post_execute(mock_context)
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_post_execute_logs_tabular_summary(self, mock_factory, mock_context, caplog):
+        """Test post_execute logs a bordered, aligned key/value summary table."""
+        operator = EnsemblBashOperator(
+            task_id="test_task",
+            bash_command="echo 'test'",
+            cwd="/test/work",
+            log_directory="airflow_logs",
+        )
+        operator.job_name = "test_job"
+        operator.job_info = JobInfo(
+            job_id="12345",
+            job_name="test_job",
+            bash_command="echo 'test'",
+            status="COMPLETED"
+        )
+
+        with caplog.at_level("INFO"):
+            operator.post_execute(mock_context)
+
+        summary = next(r.message for r in caplog.records if "POST EXECUTION SUMMARY" in r.message)
+        lines = summary.splitlines()
+
+        assert lines[0] == lines[-1] == "=" * 88
+        assert " Task          : test_task" in summary
+        assert " Job Name      : test_job" in summary
+        assert " Job ID        : 12345" in summary
+        assert " Status        : COMPLETED" in summary
+        assert " Log Directory : /test/work/airflow_logs/test_job" in summary
+        assert " CWD           : /test/work/test_job/" in summary
+        assert "echo 'test'" in summary
 
     @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
     @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
