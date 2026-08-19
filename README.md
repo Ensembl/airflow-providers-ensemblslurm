@@ -32,7 +32,7 @@ pip install airflow-providers-ensemblslurm
 Or install from source:
 
 ```bash
-git clone git@gitlab.ebi.ac.uk:ensembl-production/airflow-providers-ensemblslurm.git
+git clone git@github.com:Ensembl/airflow-providers-ensemblslurm.git
 cd airflow-providers-ensemblslurm
 pip install .
 ```
