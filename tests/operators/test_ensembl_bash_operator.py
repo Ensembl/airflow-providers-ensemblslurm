@@ -18,7 +18,11 @@ from typing import Dict, Any
 
 from airflow.exceptions import AirflowException
 from airflow.sdk import Context
+from airflow.sdk.exceptions import TaskDeferred
 from airflow.utils.state import State
+
+from ensemblslurm.clients.ensembl_slurmdb_api.ensembl_slurm_client import SlurmJobStatus
+from ensemblslurm.triggers.slurm_job import SlurmJobTrigger
 
 # Import classes to test
 from ensemblslurm.operators.ensembl_bash import (
@@ -35,6 +39,7 @@ from ensemblslurm.operators.ensembl_bash import (
     JobInfo,
     JobStatus,
     AirflowExceptionWithSlackNotification,
+    as_bool,
     format_kv_table,
 )
 
@@ -42,6 +47,12 @@ from ensemblslurm.operators.ensembl_bash import (
 # ============================================================================
 # FIXTURES
 # ============================================================================
+
+def _slack_variables(slack_notification_enable):
+    """Variable.get side_effect: the given slack flag, 'dev' environment, defaults otherwise."""
+    values = {"slack_notification_enable": slack_notification_enable, "environment": "dev"}
+    return lambda key, default=None: values.get(key, default)
+
 
 @pytest.fixture
 def mock_context():
@@ -398,6 +409,46 @@ class TestSlurmConfigBuilder:
 
             with pytest.raises(AirflowException, match="Missing required"):
                 builder.build(slurm_jwt=None)
+
+    @pytest.mark.parametrize("user, env_var", [
+        ("ens2020", "SLURM_JWT_ENS2020"),
+        ("ensops", "SLURM_JWT_ENSOPS"),
+        ("ensembl-ftp.user", "SLURM_JWT_ENSEMBL_FTP_USER"),
+    ])
+    def test_user_jwt_env_var(self, user, env_var):
+        """Test per-user JWT env var naming."""
+        assert SlurmConfigBuilder.user_jwt_env_var(user) == env_var
+
+    def test_build_uses_per_user_jwt(self):
+        """Test the token comes from SLURM_JWT_<USER> for the chosen user, not the shared SLURM_JWT."""
+        env = {'SLURM_JWT': 'shared-token', 'SLURM_JWT_ENSOPS': 'ensops-token', 'SLURM_JWT_ENS2020': 'ens2020-token'}
+        with patch.dict(os.environ, env, clear=True):
+            builder = SlurmConfigBuilder(ConfigurationParser())
+
+            assert builder.build(slurm_user="ensops").token == "ensops-token"
+            assert builder.build().token == "ens2020-token"
+
+    def test_build_falls_back_to_shared_jwt(self):
+        """Test a user without SLURM_JWT_<USER> (or with it empty) uses the shared SLURM_JWT."""
+        with patch.dict(os.environ, {'SLURM_JWT': 'shared-token', 'SLURM_JWT_ENSOPS': ''}, clear=True):
+            builder = SlurmConfigBuilder(ConfigurationParser())
+
+            assert builder.build(slurm_user="ensops").token == "shared-token"
+            assert builder.build(slurm_user="ensemblftp").token == "shared-token"
+
+    def test_build_explicit_jwt_wins(self):
+        """Test an explicit slurm_jwt overrides both env tokens."""
+        with patch.dict(os.environ, {'SLURM_JWT': 'shared-token', 'SLURM_JWT_ENSOPS': 'ensops-token'}, clear=True):
+            builder = SlurmConfigBuilder(ConfigurationParser())
+
+            assert builder.build(slurm_user="ensops", slurm_jwt="explicit").token == "explicit"
+
+    def test_build_ignores_slurm_jwt_user(self):
+        """Test SLURM_JWT_USER does not change the job user (still SLURM_USER, else ens2020)."""
+        with patch.dict(os.environ, {'SLURM_JWT': 'token', 'SLURM_JWT_USER': 'ensprod'}, clear=True):
+            config = SlurmConfigBuilder(ConfigurationParser()).build()
+
+            assert config.user == "ens2020"
 
     @patch.dict(os.environ, {'SLURM_JWT': 'token'})
     def test_build_default_cwd(self):
@@ -1246,6 +1297,183 @@ class TestEnsemblBashOperator:
 
 
 # ============================================================================
+# TEST DEFERRED MONITORING (SlurmJobTrigger)
+# ============================================================================
+
+class TestDeferredMonitoring:
+    """Test suite for deferring job monitoring to SlurmJobTrigger."""
+
+    @staticmethod
+    def _operator(mock_slurm_client):
+        operator = EnsemblBashOperator(
+            task_id="test_task",
+            bash_command="echo 'test'",
+            check_interval=300,
+        )
+        operator.job_name = "test_job"
+        operator.ensembl_cmd = "echo 'prepared'"
+        operator.job_service = SlurmJobService(mock_slurm_client)
+        return operator
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_defer_monitoring_uses_slurm_job_trigger(self, mock_factory, mock_slurm_client, mock_context):
+        """Test _defer_monitoring defers once with a SlurmJobTrigger for the job."""
+        mock_slurm_client.get_job_status_from_slurmdb.return_value = SlurmJobStatus(status="RUNNING")
+        operator = self._operator(mock_slurm_client)
+        operator.job_info = JobInfo(job_id=12345, job_name="test_job", bash_command="echo 'prepared'")
+
+        with pytest.raises(TaskDeferred) as deferred:
+            operator._defer_monitoring(mock_context, 12345)
+
+        trigger = deferred.value.trigger
+        assert isinstance(trigger, SlurmJobTrigger)
+        assert trigger.job_id == 12345
+        assert trigger.job_name == "test_job"
+        assert trigger.poll_interval == 300
+        assert deferred.value.method_name == "_monitor_job"
+        assert deferred.value.kwargs == {
+            "job_id": 12345, "job_name": "test_job", "bash_command": "echo 'prepared'", "restarts": 0
+        }
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_uses_terminal_event_without_polling(self, mock_factory, mock_slurm_client, mock_context):
+        """Test _monitor_job takes the final status from the trigger event."""
+        operator = self._operator(mock_slurm_client)
+
+        operator._monitor_job(
+            mock_context,
+            event={"job_id": 12345, "status": "COMPLETED", "reason": None, "exit_code": 0},
+            job_id=12345,
+            job_name="test_job",
+            bash_command="echo 'prepared'",
+        )
+
+        assert operator.job_info.status == "COMPLETED"
+        mock_slurm_client.get_job_status_from_slurmdb.assert_not_called()
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_legacy_resume_hands_over_to_trigger(self, mock_factory, mock_slurm_client, mock_context):
+        """Test a resume from a legacy TimeDeltaTrigger checks once, then defers to SlurmJobTrigger."""
+        mock_slurm_client.get_job_status_from_slurmdb.return_value = SlurmJobStatus(status="RUNNING")
+        operator = self._operator(mock_slurm_client)
+
+        with pytest.raises(TaskDeferred) as deferred:
+            operator._monitor_job(
+                mock_context, event=None, job_id=12345, job_name="test_job", bash_command="echo 'prepared'"
+            )
+
+        assert isinstance(deferred.value.trigger, SlurmJobTrigger)
+        assert operator.job_info.status == "RUNNING"
+        mock_slurm_client.get_job_status_from_slurmdb.assert_called_once_with(12345)
+
+    @patch('ensemblslurm.operators.ensembl_bash.Variable')
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_error_event_raises(self, mock_factory, mock_variable, mock_slurm_client, mock_context):
+        """Test an ERROR event from the trigger fails the task."""
+        mock_variable.get.return_value = False
+        operator = self._operator(mock_slurm_client)
+
+        with pytest.raises(AirflowExceptionWithSlackNotification, match="Lost track of SLURM job 12345"):
+            operator._monitor_job(
+                mock_context,
+                event={"job_id": 12345, "status": "ERROR", "message": "slurmrestd down"},
+                job_id=12345,
+                job_name="test_job",
+                bash_command="echo 'prepared'",
+            )
+
+    @pytest.mark.parametrize("status", ["TIMEOUT", "NODE_FAIL", "PREEMPTED"])
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_restarts_after_cluster_failure(self, mock_factory, status, mock_slurm_client, mock_context):
+        """Test a cluster-caused ending cancels children, resubmits the head and defers on the new job."""
+        mock_slurm_client.submit_script.return_value = 67890
+        operator = self._operator(mock_slurm_client)
+        operator.job_service.cancel_child_jobs = Mock(return_value=[])
+
+        with pytest.raises(TaskDeferred) as deferred:
+            operator._monitor_job(
+                mock_context,
+                event={"job_id": 12345, "status": status, "reason": None, "exit_code": None},
+                job_id=12345,
+                job_name="test_job",
+                bash_command="echo 'prepared'",
+                restarts=0,
+            )
+
+        operator.job_service.cancel_child_jobs.assert_called_once_with("test_job")
+        mock_slurm_client.submit_script.assert_called_once_with("echo 'prepared'")
+        assert deferred.value.trigger.job_id == 67890
+        assert deferred.value.kwargs["job_id"] == 67890
+        assert deferred.value.kwargs["restarts"] == 1
+        assert operator.job_info.job_id == 67890
+        mock_context['ti'].xcom_push.assert_called_once()
+        assert mock_context['ti'].xcom_push.call_args.kwargs["value"]["job_id"] == 67890
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_stops_restarting_at_max_restarts(self, mock_factory, mock_slurm_client, mock_context):
+        """Test no further restart once max_restarts is reached; the TIMEOUT stands."""
+        operator = self._operator(mock_slurm_client)
+        operator.job_service.cancel_child_jobs = Mock(return_value=[])
+
+        operator._monitor_job(
+            mock_context,
+            event={"job_id": 12345, "status": "TIMEOUT", "reason": None, "exit_code": None},
+            job_id=12345,
+            job_name="test_job",
+            bash_command="echo 'prepared'",
+            restarts=operator.max_restarts,
+        )
+
+        operator.job_service.cancel_child_jobs.assert_called_once_with("test_job")
+        mock_slurm_client.submit_script.assert_not_called()
+        assert operator.job_info.status == "TIMEOUT"
+
+    @pytest.mark.parametrize("status", ["FAILED", "OUT_OF_MEMORY", "CANCELLED"])
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_monitor_job_does_not_restart_pipeline_failures(self, mock_factory, status, mock_slurm_client, mock_context):
+        """Test FAILED / OUT_OF_MEMORY / CANCELLED cancel children but are never resubmitted."""
+        operator = self._operator(mock_slurm_client)
+        operator.job_service.cancel_child_jobs = Mock(return_value=[])
+
+        operator._monitor_job(
+            mock_context,
+            event={"job_id": 12345, "status": status, "reason": None, "exit_code": 1},
+            job_id=12345,
+            job_name="test_job",
+            bash_command="echo 'prepared'",
+        )
+
+        operator.job_service.cancel_child_jobs.assert_called_once_with("test_job")
+        mock_slurm_client.submit_script.assert_not_called()
+        assert operator.job_info.status == status
+
+    @patch('ensemblslurm.operators.ensembl_bash.SlurmClientFactory')
+    @patch.dict(os.environ, {'SLURM_JWT': 'test-token'})
+    def test_max_restarts_zero_disables_restart(self, mock_factory, mock_slurm_client, mock_context):
+        """Test max_restarts=0 turns automatic restarts off."""
+        operator = self._operator(mock_slurm_client)
+        operator.max_restarts = 0
+        operator.job_service.cancel_child_jobs = Mock(return_value=[])
+
+        operator._monitor_job(
+            mock_context,
+            event={"job_id": 12345, "status": "TIMEOUT", "reason": None, "exit_code": None},
+            job_id=12345,
+            job_name="test_job",
+            bash_command="echo 'prepared'",
+        )
+
+        mock_slurm_client.submit_script.assert_not_called()
+
+
+# ============================================================================
 # TEST AirflowExceptionWithSlackNotification
 # ============================================================================
 
@@ -1256,7 +1484,7 @@ class TestAirflowExceptionWithSlackNotification:
     @patch('ensemblslurm.operators.ensembl_bash.Variable')
     def test_exception_sends_notification(self, mock_variable, mock_notifier_class, mock_context):
         """Test that exception sends Slack notification."""
-        mock_variable.get.return_value = "dev"
+        mock_variable.get.side_effect = _slack_variables("True")
         mock_notifier = Mock()
         mock_notifier_class.return_value = mock_notifier
 
@@ -1273,7 +1501,7 @@ class TestAirflowExceptionWithSlackNotification:
     @patch('ensemblslurm.operators.ensembl_bash.Variable')
     def test_exception_notification_failure_does_not_raise(self, mock_variable, mock_notifier_class, mock_context):
         """Test that notification failure doesn't prevent exception."""
-        mock_variable.get.return_value = "dev"
+        mock_variable.get.side_effect = _slack_variables("True")
         mock_notifier_class.side_effect = Exception("Slack error")
 
         with pytest.raises(AirflowExceptionWithSlackNotification) as exc_info:
@@ -1284,6 +1512,66 @@ class TestAirflowExceptionWithSlackNotification:
             )
 
         assert str(exc_info.value) == "Test error"
+        mock_notifier_class.assert_called_once()
+
+    @pytest.mark.parametrize("value", ["False", "false", " FALSE ", "0", "no", "off", "", False])
+    @patch('ensemblslurm.operators.ensembl_bash.EnsemblSlackNotifier')
+    @patch('ensemblslurm.operators.ensembl_bash.Variable')
+    def test_variable_false_values_disable_slack(self, mock_variable, mock_notifier_class, value, mock_context):
+        """Test Variable values meaning 'off' (strings included) do not post to Slack."""
+        mock_variable.get.side_effect = _slack_variables(value)
+
+        with pytest.raises(AirflowExceptionWithSlackNotification):
+            raise AirflowExceptionWithSlackNotification("Test error", mock_context, "test-slack")
+
+        mock_notifier_class.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["True", "true", "1", "yes", "on", True])
+    @patch('ensemblslurm.operators.ensembl_bash.EnsemblSlackNotifier')
+    @patch('ensemblslurm.operators.ensembl_bash.Variable')
+    def test_variable_true_values_enable_slack(self, mock_variable, mock_notifier_class, value, mock_context):
+        """Test Variable values meaning 'on' post to Slack."""
+        mock_variable.get.side_effect = _slack_variables(value)
+
+        with pytest.raises(AirflowExceptionWithSlackNotification):
+            raise AirflowExceptionWithSlackNotification("Test error", mock_context, "test-slack")
+
+        mock_notifier_class.return_value.post_message.assert_called_once()
+
+    @patch('ensemblslurm.operators.ensembl_bash.EnsemblSlackNotifier')
+    @patch('ensemblslurm.operators.ensembl_bash.Variable')
+    def test_variable_unset_disables_slack(self, mock_variable, mock_notifier_class, mock_context):
+        """Test an unset Variable falls back to disabled."""
+        mock_variable.get.side_effect = lambda key, default=None: default
+
+        with pytest.raises(AirflowExceptionWithSlackNotification):
+            raise AirflowExceptionWithSlackNotification("Test error", mock_context, "test-slack")
+
+        mock_notifier_class.assert_not_called()
+
+    @patch('ensemblslurm.operators.ensembl_bash.EnsemblSlackNotifier')
+    @patch('ensemblslurm.operators.ensembl_bash.Variable')
+    def test_dag_run_conf_overrides_variable(self, mock_variable, mock_notifier_class, mock_context):
+        """Test dag_run conf "false" (string) wins over Variable "True"."""
+        mock_variable.get.side_effect = _slack_variables("True")
+        mock_context['dag_run'].conf['slack_notification_enable'] = "false"
+
+        with pytest.raises(AirflowExceptionWithSlackNotification):
+            raise AirflowExceptionWithSlackNotification("Test error", mock_context, "test-slack")
+
+        mock_notifier_class.assert_not_called()
+
+
+class TestAsBool:
+    """Test suite for as_bool flag parsing."""
+
+    @pytest.mark.parametrize("value", [True, "True", "true", " TRUE ", "1", "yes", "on", 1])
+    def test_true_values(self, value):
+        assert as_bool(value) is True
+
+    @pytest.mark.parametrize("value", [False, "False", "false", "0", "no", "off", "", None, "dev", 0])
+    def test_false_values(self, value):
+        assert as_bool(value) is False
 
 
 class TestEdgeCases:

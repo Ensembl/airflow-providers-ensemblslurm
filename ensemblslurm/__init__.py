@@ -12,6 +12,9 @@ def get_provider_info():
             {"integration-name": "EnsemblSlurmNextFlow", "python-modules": ["ensemblslurm.operators.nextflow"]},
 
         ],
+        "triggers": [
+            {"integration-name": "EnsemblSlurmBash", "python-modules": ["ensemblslurm.triggers.slurm_job"]},
+        ],
         "task-decorators": [
             {"class-name": "ensemblslurm.decorators.slurm.ensemblslurm_task", "name": "ensemblslurm"}
         ],

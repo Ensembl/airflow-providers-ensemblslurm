@@ -53,23 +53,26 @@ class EnsemblSlurmRestClient(SlurmScriptRestClient):
             job_id: int,
             raise_on_error: bool = True,
             request_options: Optional[dict] = None,
+            max_retries: int = 3,
+            retry_delay: int = 300,
     ) -> Optional[SlurmJobStatus]:
         """
         Retrieves the status of a job from the Slurm database with retry logic.
 
-        If the job status is UNKNOWN, retries up to 3 times with a 5-minute delay
-        between each attempt.
+        If the job status is UNKNOWN, retries up to max_retries times with a
+        retry_delay (seconds) blocking sleep between each attempt. Pass
+        max_retries=1 from async/trigger code to get a single non-sleeping check.
 
         Args:
             job_id (int): The ID of the job to retrieve status for.
             raise_on_error (bool, optional): Whether to raise an exception on error. Defaults to True.
             request_options (dict, optional): Additional request options. Defaults to None.
+            max_retries (int, optional): Attempts while the status is UNKNOWN. Defaults to 3.
+            retry_delay (int, optional): Seconds to sleep between attempts. Defaults to 300.
 
         Returns:
             Optional[SlurmJobStatus]: The job status if successful, otherwise None.
         """
-        max_retries = 3
-        retry_delay = 300  # 5 minutes in seconds
         job_status = None
 
         for attempt in range(max_retries):
@@ -107,7 +110,7 @@ class EnsemblSlurmRestClient(SlurmScriptRestClient):
 
             # If this is not the last attempt and status is UNKNOWN, retry after delay
             if attempt < max_retries - 1:
-                print(f"Job {job_id} status is UNKNOWN. Retrying in 5 minutes... (Attempt {attempt + 1}/{max_retries})")
+                print(f"Job {job_id} status is UNKNOWN. Retrying in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(retry_delay)
             else:
                 # Last attempt, return the UNKNOWN status

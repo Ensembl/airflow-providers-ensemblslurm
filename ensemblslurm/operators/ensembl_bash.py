@@ -4,13 +4,11 @@ import re
 import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 from airflow.exceptions import AirflowException
 from airflow.models.taskinstance import TaskInstance
 from airflow.providers.standard.operators.bash import BashOperator
-from airflow.providers.standard.triggers.temporal import TimeDeltaTrigger
 from airflow.sdk import Context, Variable
 from airflow.sdk.bases.hook import BaseHook
 from airflow.utils.session import provide_session
@@ -19,6 +17,20 @@ from ensemblslurm.clients import EnsemblSlurmRestClient
 from ensemblslurm.clients.ensembl_slurmdb_api.ensembl_slurm_client import SlurmJobStatus
 from ensemblslurm.clients.es_client import fetch_latest_event_record
 from ensemblslurm.hooks.ensembl_slack import EnsemblSlackNotifier
+from ensemblslurm.triggers.slurm_job import TERMINAL_STATES, SlurmJobTrigger
+from ensemblslurm.utils.slurm_child_jobs import cancel_child_jobs
+
+
+def as_bool(value: Any) -> bool:
+    """
+    Interpret a flag from an Airflow Variable or dag_run conf.
+
+    Variables are always strings, so a plain truthiness check treats "False" / "0" as enabled.
+    Only true / 1 / yes / on (any case, surrounding spaces ignored) count as True.
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
 
 def format_kv_table(title: str, rows: List[tuple], width: int = 88) -> str:
@@ -48,6 +60,11 @@ def format_kv_table(title: str, rows: List[tuple], width: int = 88) -> str:
     lines.append(border)
 
     return "\n".join(lines)
+
+
+# Head-job endings caused by the cluster rather than the pipeline. A resubmit (Nextflow -resume
+# skips finished tasks) can succeed; FAILED / OUT_OF_MEMORY / CANCELLED would just repeat.
+RESTARTABLE_STATES = frozenset({"TIMEOUT", "NODE_FAIL", "PREEMPTED"})
 
 
 class JobStatus(str, Enum):
@@ -252,6 +269,11 @@ class SlurmConfigBuilder:
     def __init__(self, parser: ConfigurationParser):
         self.parser = parser
 
+    @staticmethod
+    def user_jwt_env_var(user: str) -> str:
+        """Name of the env var holding `user`'s SLURM JWT, e.g. "ensops" -> "SLURM_JWT_ENSOPS"."""
+        return "SLURM_JWT_" + re.sub(r"[^A-Za-z0-9]", "_", user).upper()
+
     def build(
         self,
         slurm_uri: Optional[str] = None,
@@ -287,7 +309,9 @@ class SlurmConfigBuilder:
         uri = slurm_uri or os.getenv("SLURM_URI", "https://codon-slurm-restd.ebi.ac.uk")
         api_version = slurm_api_version or os.getenv("SLURM_API_VERSION", "0.0.42")
         user = slurm_user or os.getenv("SLURM_USER", "ens2020")
-        token = slurm_jwt or os.getenv("SLURM_JWT")
+        # slurmrestd runs jobs as the token's owner, so the token must match `user`:
+        # prefer the per-user SLURM_JWT_<USER> (e.g. SLURM_JWT_ENSOPS), then the shared SLURM_JWT.
+        token = slurm_jwt or os.getenv(self.user_jwt_env_var(user)) or os.getenv("SLURM_JWT")
 
         if not all([uri, api_version, user, token]):
             raise AirflowException("Missing required SLURM configuration parameters")
@@ -458,24 +482,43 @@ class SlurmJobService:
             self.logger.error(f"Failed to get properties for job {job_id}: {str(e)}")
             raise
 
-    def get_job_status_from_slurmdb(self, job_id: int) -> SlurmJobStatus:
+    def get_job_status_from_slurmdb(self, job_id: int, **retry_kwargs) -> SlurmJobStatus:
         """
         Get detailed job properties from SLURM database.
 
         Args:
             job_id: Job ID
+            retry_kwargs: Optional max_retries / retry_delay passed to the client
 
         Returns:
             Job properties object
         """
         try:
-            response = self.client.get_job_status_from_slurmdb(job_id)
+            response = self.client.get_job_status_from_slurmdb(job_id, **retry_kwargs)
             if response is None:
                 raise AirflowException(f"Job {job_id} not found in SLURM DB")
             return response
         except Exception as e:
             self.logger.error(f"Failed to get properties for job {job_id}: {str(e)}")
             raise
+
+    def cancel_child_jobs(self, job_name: str) -> list:
+        """
+        Cancel the still-active SLURM jobs submitted on behalf of head job `job_name`
+        (hive workers, inner Nextflow tasks). Never raises: cleanup must not mask the
+        task's real failure, and the orphan sweeper retries anything missed here.
+        """
+        try:
+            cancelled = cancel_child_jobs(self.client, job_name)
+            if cancelled:
+                self.logger.warning(
+                    f"Cancelled {len(cancelled)} child job(s) of '{job_name}': "
+                    f"{[job.job_id for job in cancelled]}"
+                )
+            return cancelled
+        except Exception as e:
+            self.logger.error(f"Failed to clean up child jobs of '{job_name}': {e}")
+            return []
 
     def get_job_status_and_id_by_name(self, job_name: str) -> Optional[tuple[int, str]] | None:
         """
@@ -730,8 +773,10 @@ class AirflowExceptionWithSlackNotification(AirflowException):
             ti = context.get("task_instance")
             dag_run = context.get("dag_run")
             dag_run_conf = dag_run.conf
-            slack_notification_enable = dag_run_conf.get(
-                "slack_notification_enable", Variable.get("slack_notification_enable", default=False)
+            slack_notification_enable = as_bool(
+                dag_run_conf.get(
+                    "slack_notification_enable", Variable.get("slack_notification_enable", default="false")
+                )
             )
             if slack_notification_enable:
                 logging.info(f"{ti}")
@@ -839,6 +884,7 @@ class EnsemblBashOperator(BashOperator):
         log_directory: str = "airflow_logs",
         slack_conn_id: str = "airflow-slack-notification",
         run_defer: int = 1,
+        max_restarts: int = 2,
         required_log_conn_id: Optional[List[str]] = None,
         log_conn_id: Optional[List[str]] = None,
         web_log_uri: Optional[str] = None,
@@ -887,6 +933,7 @@ class EnsemblBashOperator(BashOperator):
         self.env_vars = env_vars or []
         self.check_interval = check_interval
         self.run_defer = run_defer
+        self.max_restarts = max_restarts
 
         # Runtime state
         self.job_info: Optional[JobInfo] = None
@@ -1034,6 +1081,7 @@ class EnsemblBashOperator(BashOperator):
 
                 if status != "COMPLETED":
                     logging.error(f"**Task: {self.job_name} Failed for slurm job_id  {job_id} **")
+                    self.job_service.cancel_child_jobs(self.job_name)
                     # raise ValueError(f"Job {self.job_name} failed with status {status}")
 
         except Exception as e:
@@ -1041,6 +1089,38 @@ class EnsemblBashOperator(BashOperator):
             raise AirflowExceptionWithSlackNotification(
                 f"Failed to execute job: {str(e)}", context, self.notification_config.slack_conn_id
             )
+
+    def _defer_until_job_finishes(self, job_id: int, job_name: str, bash_command: str, restarts: int = 0) -> None:
+        """Defer once; SlurmJobTrigger polls SLURM in the triggerer and resumes the task when the job ends."""
+        self.defer(
+            trigger=SlurmJobTrigger(
+                job_id=job_id,
+                job_name=job_name,
+                poll_interval=self.check_interval,
+                slurm_uri=self.slurm_config.url,
+                slurm_api_version=self.slurm_config.api_version,
+                slurm_user=self.slurm_config.user,
+            ),
+            method_name="_monitor_job",
+            kwargs={"job_id": job_id, "job_name": job_name, "bash_command": bash_command, "restarts": restarts},
+        )
+
+    def _restart_job(self, context: Context, job_name: str, bash_command: str, restarts: int) -> None:
+        """Resubmit the head job (Nextflow -resume skips finished work) and defer on the new job."""
+        job_id = self.job_service.submit_job(bash_command, job_name)
+        self.job_info = JobInfo(job_id=job_id, job_name=job_name, bash_command=bash_command)
+        logging.warning(f"Restarted '{job_name}' as SLURM job {job_id} (restart {restarts}/{self.max_restarts})")
+
+        context["ti"].xcom_push(
+            key="job_info",
+            value={
+                "job_id": job_id,
+                "task_id": context["ti"].task_id,
+                "job_name": job_name,
+                "user": self.slurm_config.user,
+            },
+        )
+        self._defer_until_job_finishes(job_id, job_name, bash_command, restarts)
 
     def _defer_monitoring(self, context: Context, job_id: int) -> None:
         """Defer job monitoring."""
@@ -1050,11 +1130,7 @@ class EnsemblBashOperator(BashOperator):
 
         logging.info(f"Deferring monitoring for job {job_id} with status {status}")
 
-        self.defer(
-            trigger=TimeDeltaTrigger(timedelta(seconds=self.check_interval)),
-            method_name="_monitor_job",
-            kwargs={"job_id": job_id, "job_name": self.job_name, "bash_command": self.ensembl_cmd},
-        )
+        self._defer_until_job_finishes(job_id, self.job_name, self.ensembl_cmd)
 
     def _monitor_job(
         self,
@@ -1063,30 +1139,41 @@ class EnsemblBashOperator(BashOperator):
         job_id: int = None,
         job_name: str = None,
         bash_command: str = None,
+        restarts: int = 0,
     ) -> Any:
         """Monitor deferred job."""
         try:
-            slurm_job_status = self.job_service.get_job_status_from_slurmdb(job_id)
-            status = slurm_job_status.status
+            if isinstance(event, dict) and event.get("status") == "ERROR":
+                raise AirflowException(
+                    f"Lost track of SLURM job {job_id}: {event.get('message')}"
+                )
+
+            if isinstance(event, dict) and event.get("status") in TERMINAL_STATES:
+                status = event["status"]
+            else:
+                # Resumed by a legacy TimeDeltaTrigger (task deferred before this
+                # version was deployed): check once, then hand over to SlurmJobTrigger.
+                status = self.job_service.get_job_status_from_slurmdb(job_id).status
 
             self.job_info = JobInfo(
                 job_id=job_id, job_name=job_name, bash_command=bash_command, status=status
             )
 
-            # Check if terminal state
-            terminal_states = {"FAILED", "COMPLETED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "REVOKED", "SPECIAL_EXIT", "PREEMPTED"}
-            if status not in terminal_states:
+            if status not in TERMINAL_STATES:
                 logging.info(f"Job {job_id} status: {status}, continuing to monitor")
-                self.defer(
-                    trigger=TimeDeltaTrigger(timedelta(seconds=self.check_interval)),
-                    method_name="_monitor_job",
-                    kwargs={"job_id": job_id, "job_name": job_name, "bash_command": bash_command},
-                )
+                self._defer_until_job_finishes(job_id, job_name, bash_command, restarts)
 
             logging.info(f"Job {job_id} reached terminal state: {status}")
 
             if status != "COMPLETED":
                 logging.error(f"**Task: {job_name} Failed for slurm job_id  {job_id} with slurm status {status}**")
+                # The head job is gone (cancelled, timed out, OOM, node failure...) but hive
+                # workers / inner Nextflow jobs it submitted keep running unless cancelled here.
+                # Must happen before any restart, so old children never overlap the new head.
+                self.job_service.cancel_child_jobs(job_name)
+
+                if status in RESTARTABLE_STATES and restarts < self.max_restarts:
+                    self._restart_job(context, job_name, bash_command, restarts + 1)
 
         except Exception as e:
             raise AirflowExceptionWithSlackNotification(
